@@ -1,0 +1,380 @@
+{
+  "name": "VertData — Polymarket Trading Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-001",
+      "name": "Every 30 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SIGNAL_SERVICE_URL }}/analyze",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "continueOnFail": true
+      },
+      "id": "http-fetch-signals-002",
+      "name": "Fetch Trade Signals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.signals_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-has-signals-003",
+      "name": "Has Signals?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EXECUTOR_URL }}/execute",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.EXECUTOR_API_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "user_id",
+              "value": "={{ $env.DEFAULT_USER_ID }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "run_id",
+              "value": "={{ $json.run_id }}"
+            },
+            {
+              "name": "signals",
+              "value": "={{ $json.signals }}"
+            },
+            {
+              "name": "markets_reviewed",
+              "value": "={{ $json.markets_reviewed }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "continueOnFail": true
+      },
+      "id": "http-execute-trades-004",
+      "name": "Execute Trades",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\nconst signals = $('Fetch Trade Signals').first().json;\n\nreturn [{\n  json: {\n    run_id: result.run_id || signals.run_id,\n    timestamp: new Date().toISOString(),\n    markets_reviewed: signals.markets_reviewed || 0,\n    signals_found: signals.signals_count || 0,\n    executed_count: (result.executed || []).length,\n    skipped_count: (result.skipped || []).length,\n    total_deployed_usdc: result.total_deployed_usdc || 0,\n    executed_trades: result.executed || [],\n    skipped_trades: result.skipped || []\n  }\n}];"
+      },
+      "id": "code-format-summary-005",
+      "name": "Format Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.executed_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-trades-executed-006",
+      "name": "Trades Executed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EXECUTOR_URL }}/log-run",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-log-no-trades-007",
+      "name": "Log: No Trades",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "noreply@vertdata.com",
+        "toEmail": "={{ $env.ADMIN_EMAIL }}",
+        "subject": "VertData: {{ $json.executed_count }} trade(s) placed — ${{ $json.total_deployed_usdc }} USDC deployed",
+        "emailFormat": "html",
+        "html": "=<h2>VertData Trading Report</h2>\n<p><strong>Run ID:</strong> {{ $json.run_id }}</p>\n<p><strong>Time:</strong> {{ $json.timestamp }}</p>\n<p><strong>Markets Analyzed:</strong> {{ $json.markets_reviewed }}</p>\n<p><strong>Signals Found:</strong> {{ $json.signals_found }}</p>\n<p><strong>Trades Executed:</strong> {{ $json.executed_count }}</p>\n<p><strong>Total USDC Deployed:</strong> ${{ $json.total_deployed_usdc }}</p>\n<hr>\n<h3>Executed Trades</h3>\n<table border=\"1\" cellpadding=\"8\" cellspacing=\"0\" style=\"border-collapse: collapse; width: 100%;\">\n  <thead>\n    <tr style=\"background-color: #f2f2f2;\">\n      <th>Market</th>\n      <th>Outcome</th>\n      <th>Amount (USDC)</th>\n      <th>Price</th>\n      <th>Expected Value</th>\n    </tr>\n  </thead>\n  <tbody>\n    {% for trade in $json.executed_trades %}\n    <tr>\n      <td>{{ trade.market_question }}</td>\n      <td>{{ trade.outcome }}</td>\n      <td>${{ trade.amount_usdc }}</td>\n      <td>{{ trade.price }}</td>\n      <td>{{ trade.expected_value }}</td>\n    </tr>\n    {% endfor %}\n  </tbody>\n</table>\n{% if $json.skipped_count > 0 %}\n<hr>\n<h3>Skipped Trades ({{ $json.skipped_count }})</h3>\n<ul>\n  {% for trade in $json.skipped_trades %}\n  <li>{{ trade.market_question }} — {{ trade.skip_reason }}</li>\n  {% endfor %}\n</ul>\n{% endif %}",
+        "options": {}
+      },
+      "id": "email-trades-executed-008",
+      "name": "Email: Trades Executed",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1560, 100],
+      "credentials": {
+        "smtp": {
+          "id": "1",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EXECUTOR_URL }}/log-run",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "http-log-complete-009",
+      "name": "Log: Run Complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 100]
+    },
+    {
+      "parameters": {},
+      "id": "error-trigger-010",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [680, 500]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@vertdata.com",
+        "toEmail": "={{ $env.ADMIN_EMAIL }}",
+        "subject": "VertData Pipeline Error — {{ $json.error.message }}",
+        "emailFormat": "html",
+        "html": "=<h2 style=\"color: #d32f2f;\">VertData Pipeline Error</h2>\n<p><strong>Time:</strong> {{ new Date().toISOString() }}</p>\n<p><strong>Node:</strong> {{ $json.node.name }}</p>\n<p><strong>Error Message:</strong> {{ $json.error.message }}</p>\n<hr>\n<h3>Error Details</h3>\n<pre style=\"background-color: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto;\">{{ JSON.stringify($json.error, null, 2) }}</pre>\n<hr>\n<h3>Execution Context</h3>\n<p><strong>Workflow:</strong> {{ $workflow.name }}</p>\n<p><strong>Execution ID:</strong> {{ $execution.id }}</p>\n<p><strong>Mode:</strong> {{ $execution.mode }}</p>\n<hr>\n<p style=\"color: #666; font-size: 0.9em;\">Check the n8n execution history for full details.</p>",
+        "options": {}
+      },
+      "id": "email-error-alert-011",
+      "name": "Email: Error Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [900, 500],
+      "credentials": {
+        "smtp": {
+          "id": "1",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 30 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Trade Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Trade Signals": {
+      "main": [
+        [
+          {
+            "node": "Has Signals?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Signals?": {
+      "main": [
+        [
+          {
+            "node": "Execute Trades",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log: No Trades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Trades": {
+      "main": [
+        [
+          {
+            "node": "Format Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Summary": {
+      "main": [
+        [
+          {
+            "node": "Trades Executed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trades Executed?": {
+      "main": [
+        [
+          {
+            "node": "Email: Trades Executed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log: No Trades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: Trades Executed": {
+      "main": [
+        [
+          {
+            "node": "Log: Run Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Email: Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "vertdata-polymarket-pipeline"
+  },
+  "id": "vertdata-polymarket-pipeline",
+  "tags": []
+}
