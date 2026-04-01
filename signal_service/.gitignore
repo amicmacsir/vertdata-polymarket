@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+signal_service.log
+uvicorn.log
+nohup.out
